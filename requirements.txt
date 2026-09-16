@@ -1,5 +1,9 @@
 google-generativeai
 chromadb
+transformers
+torch
+accelerate
+sentencepiece
 streamlit
 pandas
 openpyxl
