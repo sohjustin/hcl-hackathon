@@ -15,11 +15,35 @@ if "history" not in st.session_state:
     st.session_state.history = []
 
 
+def chunk_label(meta: dict) -> str:
+    """
+    Build a distinguishing label for one retrieved chunk, e.g.
+    'fund_factsheet_safe.pdf — chunk 2', 'clients_portfolio.csv — row 14',
+    or 'client_correspondence.json — record 4'.
+    """
+    source = meta.get("source", "unknown")
+    doc_type = meta.get("doc_type")
+    if doc_type == "pdf" and "chunk_index" in meta:
+        return f"{source} — chunk {meta['chunk_index'] + 1}"
+    if doc_type == "json" and "record_index" in meta:
+        label = f"{source} — record {meta['record_index'] + 1}"
+        if meta.get("chunk_index", 0) > 0:
+            label += f", chunk {meta['chunk_index'] + 1}"
+        return label
+    if doc_type == "csv" and "row_index" in meta:
+        return f"{source} — row {meta['row_index'] + 1}"
+    return source
+
+
 def render_sources(chunks, metadatas):
-    with st.expander("Sources & retrieved paragraphs"):
-        for doc, meta in zip(chunks, metadatas):
-            st.markdown(f"**{meta.get('source', 'unknown')}**")
-            st.caption(doc[:400] + ("..." if len(doc) > 400 else ""))
+    if not chunks:
+        return
+    with st.expander(f"Sources & relevant paragraphs ({len(chunks)})"):
+        for i, (doc, meta) in enumerate(zip(chunks, metadatas)):
+            st.markdown(f"**{chunk_label(meta)}**")
+            st.caption(doc)
+            if i < len(chunks) - 1:
+                st.divider()
 
 
 # Replay previous turns
@@ -43,7 +67,8 @@ if query:
     results = retrieve(query, k=5)
     chunks = results["documents"][0]
     metadatas = results["metadatas"][0]
-    answer = generate(query, chunks)
+
+    answer = generate(query, chunks, metadatas)
 
     with st.chat_message("assistant"):
         st.write(answer)
@@ -56,6 +81,4 @@ if query:
         "metadatas": metadatas,
     })
 
-    # Rerun so the new turn's log button gets picked up by the replay loop above,
-    # with a stable key based on its position in history.
     st.rerun()

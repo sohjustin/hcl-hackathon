@@ -4,6 +4,7 @@ Used by both ingest.py (embedding at index time) and app.py (the UI).
 """
 
 import os
+import re
 import pandas as pd
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -54,19 +55,63 @@ def retrieve(query: str, k: int = 5, where: dict | None = None) -> dict:
     )
 
 
-def generate(query: str, retrieved_chunks: list[str]) -> str:
+def format_context(chunks: list[str], metadatas: list[dict]) -> str:
+    """Number each chunk and label it with its source, so the model can cite it by name."""
+    labeled = []
+    for i, (doc, meta) in enumerate(zip(chunks, metadatas), start=1):
+        source = meta.get("source", "unknown")
+        labeled.append(f"[{i}] Source: {source}\n{doc}")
+    return "\n\n".join(labeled)
+
+
+def generate(query: str, chunks: list[str], metadatas: list[dict]) -> str:
     """
-    Answer the query using only the retrieved chunks as context, via Gemini.
+    Answer the query using only the retrieved chunks as context, via Gemini,
+    citing the source filename after every claim so the UI can show only the
+    files actually used rather than everything that was retrieved.
     """
-    context = "\n\n---\n\n".join(retrieved_chunks)
+    context = format_context(chunks, metadatas)
     prompt = (
-        "You are a wealth advisor assistant. Answer only from the provided "
-        "context. If the context doesn't contain the answer, say so "
-        "explicitly rather than guessing.\n\n"
-        f"Context:\n{context}\n\nQuestion: {query}"
+        "You are a wealth advisor assistant. Answer the question using ONLY "
+        "the numbered sources below.\n\n"
+        "After every factual claim, cite the source it came from in the "
+        "exact format [Source: filename]. If a sentence draws on multiple "
+        "sources, cite each one, e.g. [Source: a.pdf, Source: b.pdf]. Only "
+        "cite a source if you actually used it — do not cite a source you "
+        "didn't draw on.\n\n"
+        "If the sources do not contain enough information to answer "
+        "confidently, say so explicitly rather than guessing.\n\n"
+        f"Sources:\n{context}\n\nQuestion: {query}"
     )
     response = generation_model.generate_content(prompt)
     return response.text
+
+
+def extract_cited_sources(answer_text: str) -> set[str]:
+    """Pull every '[Source: filename]' tag out of the generated answer."""
+    return {s.strip() for s in re.findall(r"\[Source:\s*([^\],\]]+)\]", answer_text)}
+
+
+def filter_relevant(chunks: list[str], metadatas: list[dict], answer_text: str):
+    """
+    Keep only the retrieved chunks whose source was actually cited in the
+    answer. If the model didn't cite anything (formatting slip, or a short
+    answer with no claims), fall back to returning everything retrieved
+    rather than silently showing nothing.
+    """
+    cited = extract_cited_sources(answer_text)
+    if not cited:
+        return chunks, metadatas
+
+    filtered_chunks, filtered_metadatas = [], []
+    for chunk, meta in zip(chunks, metadatas):
+        if meta.get("source", "") in cited:
+            filtered_chunks.append(chunk)
+            filtered_metadatas.append(meta)
+
+    if not filtered_chunks:  # citations didn't match any retrieved source name
+        return chunks, metadatas
+    return filtered_chunks, filtered_metadatas
 
 
 def log_result(
